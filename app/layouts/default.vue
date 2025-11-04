@@ -2,7 +2,6 @@
 import type { NavigationMenuItem } from '@nuxt/ui'
 
 const route = useRoute()
-const toast = useToast()
 
 const open = ref(false)
 
@@ -68,14 +67,9 @@ const links = [[{
     }
   }]
 }], [{
-  label: 'Feedback',
-  icon: 'i-lucide-message-circle',
-  to: 'https://github.com/nuxt-ui-templates/dashboard',
-  target: '_blank'
-}, {
   label: 'Help & Support',
   icon: 'i-lucide-info',
-  to: 'https://github.com/nuxt-ui-templates/dashboard',
+  to: 'https://devops-support.example.com',
   target: '_blank'
 }]] satisfies NavigationMenuItem[][]
 
@@ -95,30 +89,6 @@ const groups = computed(() => [{
   }]
 }])
 
-onMounted(async () => {
-  const cookie = useCookie('cookie-consent')
-  if (cookie.value === 'accepted') {
-    return
-  }
-
-  toast.add({
-    title: 'We use first-party cookies to enhance your experience on our website.',
-    duration: 0,
-    close: false,
-    actions: [{
-      label: 'Accept',
-      color: 'neutral',
-      variant: 'outline',
-      onClick: () => {
-        cookie.value = 'accepted'
-      }
-    }, {
-      label: 'Opt out',
-      color: 'neutral',
-      variant: 'ghost'
-    }]
-  })
-})
 </script>
 
 <template>

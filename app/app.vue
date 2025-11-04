@@ -4,7 +4,7 @@ const colorMode = useColorMode()
 const color = computed(() => colorMode.value === 'dark' ? '#1b1718' : 'white')
 
 useHead({
-  title: 'Newbecica',
+  title: 'NUBECICA',
   meta: [
     { charset: 'utf-8' },
     { name: 'viewport', content: 'width=device-width, initial-scale=1' },
