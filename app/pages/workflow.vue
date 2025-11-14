@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { Edge, Node } from '@vue-flow/core'
+import { computed, nextTick, ref, watch } from 'vue'
+import type { Edge, GraphNode, Node, XYPosition } from '@vue-flow/core'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
+import { Controls } from '@vue-flow/controls'
+import { MiniMap } from '@vue-flow/minimap'
 
 import StartNode from '~/components/workflow/StartNode.vue'
 import type { StartNodeData } from '~/components/workflow/StartNode.vue'
@@ -19,7 +21,7 @@ import type { NoteNodeData } from '~/components/workflow/NoteNode.vue'
 import NodePalette from '~/components/workflow/NodePalette.vue'
 
 definePageMeta({
-  layout: 'workflow',
+  //layout: 'workflow',
   title: 'Workflow'
 })
 
@@ -109,17 +111,20 @@ const edges = ref<Edge[]>([
     sourceHandle: 'loop-target-out',
     target: 'loop-task-1',
     targetHandle: 'app-target',
-    type: 'simplebezier'
+    type: 'simplebezier',
+    data: { loopId: 'loop', loopRole: 'entry' }
   },
   {
     id: 'loop-task-1-2',
     source: 'loop-task-1',
-    target: 'loop-task-2'
+    target: 'loop-task-2',
+    data: { loopId: 'loop', loopRole: 'chain' }
   },
   {
     id: 'loop-task-2-3',
     source: 'loop-task-2',
-    target: 'loop-task-3'
+    target: 'loop-task-3',
+    data: { loopId: 'loop', loopRole: 'chain' }
   },
   {
     id: 'loop-exit',
@@ -127,7 +132,8 @@ const edges = ref<Edge[]>([
     sourceHandle: 'app-source',
     target: 'loop',
     targetHandle: 'loop-source-in',
-    type: 'simplebezier'
+    type: 'simplebezier',
+    data: { loopId: 'loop', loopRole: 'exit' }
   },
   {
     id: 'loop-to-end',
@@ -145,25 +151,156 @@ const edges = ref<Edge[]>([
   }
 ])
 
+const loopChildrenSnapshot = ref<Record<string, string>>({})
+
 const colorMode = useColorMode()
-const canvasClasses = computed(() =>
-  colorMode.value === 'dark'
-    ? 'text-slate-100'
-    : 'text-slate-900'
-)
+const isDarkMode = computed(() => colorMode.value === 'dark')
+const canvasClasses = computed(() => (isDarkMode.value ? 'text-slate-100' : 'text-slate-900'))
 const canvasStyle = computed(() => ({
-  backgroundColor: colorMode.value === 'dark' ? '#0f172a' : '#f8fafc'
+  backgroundColor: isDarkMode.value ? '#0f172a' : '#ffffff'
 }))
-const gridColor = computed(() =>
-  colorMode.value === 'dark'
-    ? 'rgba(148,163,184,0.35)'
-    : 'rgba(71,85,105,0.25)'
-)
+const gridColor = computed(() => (isDarkMode.value ? 'rgba(148,163,184,0.35)' : 'rgba(71,85,105,0.25)'))
 
 const dropPaneRef = ref<HTMLElement | null>(null)
-const { project, addNodes } = useVueFlow()
+const { project, addNodes, getNodes, setEdges } = useVueFlow()
 let seed = 1
 const makeId = () => `dnd-${seed++}`
+
+type LoopEdgeRole = 'entry' | 'exit' | 'chain'
+
+const LOOP_ENTRY_HANDLE = 'loop-target-out'
+const LOOP_EXIT_HANDLE = 'loop-source-in'
+
+const getNodeRect = (node: GraphNode) => {
+  const width = node.dimensions?.width ?? 0
+  const height = node.dimensions?.height ?? 0
+  const x = node.computedPosition?.x ?? node.position.x ?? 0
+  const y = node.computedPosition?.y ?? node.position.y ?? 0
+  return { x, y, width, height }
+}
+
+const isPointInsideNode = (point: XYPosition, node: GraphNode) => {
+  const { x, y, width, height } = getNodeRect(node)
+  if (!width || !height) { return false }
+  return point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height
+}
+
+const findLoopAtPosition = (position: XYPosition) => {
+  const loopNodes = getNodes.value.filter(node => node.type === 'loop')
+  for (let index = loopNodes.length - 1; index >= 0; index -= 1) {
+    const loopNode = loopNodes[index]
+    if (loopNode && isPointInsideNode(position, loopNode)) {
+      return loopNode
+    }
+  }
+  return null
+}
+
+const toChildPosition = (loopNode: GraphNode, absolutePosition: XYPosition): XYPosition => {
+  const loopRect = getNodeRect(loopNode)
+  return {
+    x: absolutePosition.x - loopRect.x,
+    y: absolutePosition.y - loopRect.y
+  }
+}
+
+const sortLoopChildren = (children: GraphNode[]) => [
+  ...children
+].sort((a, b) => {
+  if (a.position.x !== b.position.x) {
+    return a.position.x - b.position.x
+  }
+  if (a.position.y !== b.position.y) {
+    return a.position.y - b.position.y
+  }
+  return a.id.localeCompare(b.id)
+})
+
+const loopEdgeData = (loopId: string, loopRole: LoopEdgeRole) => ({
+  loopId,
+  loopRole
+})
+
+const syncLoopEdges = (loopId: string) => {
+  const children = sortLoopChildren(
+    getNodes.value.filter(node => node.parentNode === loopId)
+  )
+
+  setEdges(currentEdges => {
+    const preserved = currentEdges.filter(edge => edge.data?.loopId !== loopId)
+    if (!children.length) {
+      return preserved
+    }
+
+    const firstChild = children[0]
+    const lastChild = children[children.length - 1]
+
+    if (!firstChild || !lastChild) {
+      return preserved
+    }
+
+    const loopSpecificEdges: Edge[] = [
+      {
+        id: `loop:${loopId}:entry`,
+        source: loopId,
+        sourceHandle: LOOP_ENTRY_HANDLE,
+        target: firstChild.id,
+        type: 'simplebezier',
+        data: loopEdgeData(loopId, 'entry')
+      }
+    ]
+
+    for (let index = 0; index < children.length - 1; index += 1) {
+      const currentChild = children[index]
+      const nextChild = children[index + 1]
+      if (!currentChild || !nextChild) {
+        continue
+      }
+      loopSpecificEdges.push({
+        id: `loop:${loopId}:chain:${currentChild.id}:${nextChild.id}`,
+        source: currentChild.id,
+        target: nextChild.id,
+        data: loopEdgeData(loopId, 'chain')
+      })
+    }
+
+    loopSpecificEdges.push({
+      id: `loop:${loopId}:exit`,
+      source: lastChild.id,
+      target: loopId,
+      targetHandle: LOOP_EXIT_HANDLE,
+      type: 'simplebezier',
+      data: loopEdgeData(loopId, 'exit')
+    })
+
+    return [...preserved, ...loopSpecificEdges]
+  })
+}
+
+watch(
+  nodes,
+  currentNodes => {
+    const nextSnapshot: Record<string, string> = {}
+    currentNodes
+      .filter(node => node.type === 'loop')
+      .forEach(loopNode => {
+        const children = currentNodes.filter(node => node.parentNode === loopNode.id)
+        const signature = children
+          .map(child => `${child.id}:${child.position.x}:${child.position.y}`)
+          .sort()
+          .join('|')
+
+        nextSnapshot[loopNode.id] = signature
+
+        if (loopChildrenSnapshot.value[loopNode.id] !== signature) {
+          syncLoopEdges(loopNode.id)
+        }
+      })
+
+    loopChildrenSnapshot.value = nextSnapshot
+  },
+  { deep: true }
+)
 
 const onDragOver = (event: DragEvent) => {
   event.preventDefault()
@@ -172,7 +309,7 @@ const onDragOver = (event: DragEvent) => {
   }
 }
 
-const onDrop = (event: DragEvent) => {
+const onDrop = async (event: DragEvent) => {
   event.preventDefault()
   const payload = event.dataTransfer?.getData('application/vueflow')
   if (!payload) { return }
@@ -184,63 +321,101 @@ const onDrop = (event: DragEvent) => {
     return
   }
   const bounds = dropPaneRef.value?.getBoundingClientRect()
-  const position = project({
+  const absolutePosition = project({
     x: event.clientX - (bounds?.left ?? 0),
     y: event.clientY - (bounds?.top ?? 0)
   })
 
-  addNodes({
+  const loopNode = findLoopAtPosition(absolutePosition)
+
+  const newNode: Node<WorkflowNodeData> = {
     id: makeId(),
     type: nodeMeta.type,
-    position,
+    position: loopNode ? toChildPosition(loopNode, absolutePosition) : absolutePosition,
     data: nodeMeta.data ?? {},
     style: nodeMeta.style
-  })
+  }
+
+  if (loopNode) {
+    newNode.parentNode = loopNode.id
+    newNode.extent = 'parent'
+  }
+
+  addNodes(newNode)
+
+  if (loopNode) {
+    await nextTick()
+    syncLoopEdges(loopNode.id)
+  }
 }
 </script>
 
 <template>
-  <div
-    :class="['h-screen w-screen transition-colors', canvasClasses]"
-    :style="canvasStyle"
-  >
-    <div class="mx-auto flex h-full w-full  gap-6 px-4 py-6">
-      <NodePalette class="sticky top-8 self-start" />
-        <VueFlow
-          :nodes="nodes"
-          :edges="edges"
-          :class="gridColor"
-          class="h-full w-full"
-          fit-view-on-init
-          @dragover="onDragOver"
-          @drop="onDrop"
+  <UDashboardPanel id="workflow">
+    <template #header>
+      <UDashboardNavbar title="Workflows" :ui="{ right: 'gap-3' }">
+        <template #leading>
+          <UDashboardSidebarCollapse />
+        </template>
+      </UDashboardNavbar>
+    </template>
+
+    <template #body>
+      <div
+        :class="['relative min-h-[calc(100vh-8rem)] w-full overflow-hidden transition-colors', canvasClasses]"
+        :style="canvasStyle"
+      >
+        <div
+          ref="dropPaneRef"
+          class="absolute inset-0"
         >
-          <Background :gap="24" />
+          <VueFlow
+            v-model:nodes="nodes"
+            v-model:edges="edges"
+            :class="canvasClasses"
+            :style="canvasStyle"
+            auto-connect
+            class="h-full w-full"
+            @dragover="onDragOver"
+            @drop="onDrop"
+          >
+            <MiniMap />
+            <Controls />
+            <Background
+              :gap="24"
+              :color="gridColor"
+            />
 
-          <template #node-start="nodeProps">
-            <StartNode v-bind="nodeProps" />
-          </template>
+            <template #node-start="nodeProps">
+              <StartNode v-bind="nodeProps" />
+            </template>
 
-          <template #node-ifElse="nodeProps">
-            <IfElseNode v-bind="nodeProps" />
-          </template>
+            <template #node-ifElse="nodeProps">
+              <IfElseNode v-bind="nodeProps" />
+            </template>
 
-          <template #node-loop="nodeProps">
-            <LoopNode v-bind="nodeProps" />
-          </template>
+            <template #node-loop="nodeProps">
+              <LoopNode v-bind="nodeProps" />
+            </template>
 
-          <template #node-app="nodeProps">
-            <AppNode v-bind="nodeProps" />
-          </template>
+            <template #node-app="nodeProps">
+              <AppNode v-bind="nodeProps" />
+            </template>
 
-          <template #node-end="nodeProps">
-            <EndNode v-bind="nodeProps" />
-          </template>
+            <template #node-end="nodeProps">
+              <EndNode v-bind="nodeProps" />
+            </template>
 
-          <template #node-note="nodeProps">
-            <NoteNode v-bind="nodeProps" />
-          </template>
-        </VueFlow>
-    </div>
-  </div>
+            <template #node-note="nodeProps">
+              <NoteNode v-bind="nodeProps" />
+            </template>
+          </VueFlow>
+        </div>
+
+        <div class="absolute left-6 top-6 z-20 flex flex-col gap-4">
+          <NodePalette class="w-80 max-h-[calc(100vh-5rem)] overflow-y-auto rounded-2xl border border-slate-200/70 bg-white/95 p-4 shadow-2xl backdrop-blur-sm dark:border-slate-800/70 dark:bg-slate-900/90" />
+        </div>
+      </div>
+    </template>
+  </UDashboardPanel>
 </template>

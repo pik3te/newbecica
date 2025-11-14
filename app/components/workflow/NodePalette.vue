@@ -87,7 +87,9 @@ const onDragStart = (event: DragEvent, item: any) => {
 </script>
 
 <template>
-  <aside class="note-palette">
+  <aside
+    class="min-w-[220px] max-w-[240px] rounded-xl px-4 py-6 bg-[linear-gradient(180deg,rgba(248,250,252,0.95),rgba(241,245,249,0.9))] shadow-[0_20px_60px_-35px_rgba(15,23,42,0.45)] h-fit dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.85),rgba(30,41,59,0.82))] dark:shadow-[0_25px_70px_-40px_rgba(0,0,0,0.7)]"
+  >
     <div v-for="section in sections" :key="section.title" class="mb-5">
       <p class="px-3 text-xs font-semibold  tracking-wide text-slate-400">
         {{ section.title }}
@@ -96,12 +98,12 @@ const onDragStart = (event: DragEvent, item: any) => {
         <button
           v-for="item in section.items"
           :key="item.label"
-          class="flex items-center gap-3 rounded-2xl px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-black/20 dark:text-slate-100 dark:hover:bg-slate-800/60"
+          class="flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-black/20 dark:text-slate-100 dark:hover:bg-slate-800/60"
           draggable="true"
           @dragstart="onDragStart($event, item)"
         >
           <span
-            class="flex h-8 w-8 items-center justify-center rounded-2xl text-slate-900 dark:text-slate-900"
+            class="flex h-8 w-8 items-center justify-center rounded-xl text-slate-900 dark:text-slate-900"
             :style="{ backgroundColor: item.accent }"
           >
             <UIcon :name="item.icon" class="text-base" />
@@ -112,19 +114,3 @@ const onDragStart = (event: DragEvent, item: any) => {
     </div>
   </aside>
 </template>
-
-<style scoped>
-.note-palette {
-  min-width: 220px;
-  max-width: 240px;
-  border-radius: 32px;
-  padding: 1.5rem 1rem;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(241, 245, 249, 0.9));
-  box-shadow: 0 20px 60px -35px rgba(15, 23, 42, 0.45);
-  height: fit-content;
-}
-.dark .note-palette {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.82));
-  box-shadow: 0 25px 70px -40px rgba(0, 0, 0, 0.7);
-}
-</style>
