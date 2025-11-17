@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onScopeDispose, ref, watch } from 'vue'
-import type { Edge, GraphNode, Node, NodeDragEvent, XYPosition } from '@vue-flow/core'
+import type { ConnectingHandle, Edge, GraphNode, Node, NodeDragEvent, XYPosition } from '@vue-flow/core'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -18,6 +18,8 @@ import EndNode from '~/components/workflow/EndNode.vue'
 import type { EndNodeData } from '~/components/workflow/EndNode.vue'
 import NoteNode from '~/components/workflow/NoteNode.vue'
 import type { NoteNodeData } from '~/components/workflow/NoteNode.vue'
+import NewNodePlaceholder from '~/components/workflow/NewNodePlaceholder.vue'
+import type { NewNodePlaceholderData, TemplateAnchorInfo } from '~/components/workflow/NewNodePlaceholder.vue'
 import NodePalette from '~/components/workflow/NodePalette.vue'
 
 definePageMeta({
@@ -25,137 +27,38 @@ definePageMeta({
   title: 'Workflow'
 })
 
-type WorkflowNodeData = StartNodeData | IfElseNodeData | LoopNodeData | AppNodeData | EndNodeData | NoteNodeData
+type WorkflowNodeData = StartNodeData | IfElseNodeData | LoopNodeData | AppNodeData | EndNodeData | NoteNodeData | NewNodePlaceholderData
+
+type NodePaletteInstance = InstanceType<typeof NodePalette> & {
+  openWithHighlight?: () => void
+  startSelectionMode?: () => void
+  stopSelectionMode?: () => void
+  closePalette?: () => void
+  getRootEl?: () => HTMLElement | null
+}
+
+type TemplateSelectionState = {
+  anchorHandle: TemplateAnchorInfo
+  nodeId: string
+}
+
+type PaletteNodeItem = {
+  type: string
+  data?: Record<string, any>
+  style?: Record<string, any>
+}
 
 const LOOP_DRAG_HANDLE = '.loop-node__drag-handle'
-const LOOP_CHILD_ELIGIBLE_TYPES = new Set<string>(['app', 'ifElse'])
+const LOOP_CHILD_ELIGIBLE_TYPES = new Set<string>(['app', 'ifElse', 'newNode'])
 
 const canTypeBeLoopChild = (type?: string | null): type is string =>
   typeof type === 'string' && LOOP_CHILD_ELIGIBLE_TYPES.has(type)
 const canNodeBeLoopChild = (node?: GraphNode | null) =>
   Boolean(node && canTypeBeLoopChild(node.type))
 
-const nodes = ref<Node<WorkflowNodeData>[]>([
-  {
-    id: 'start',
-    type: 'start',
-    position: { x: 120, y: 150 },
-    data: { label: 'Start', icon: 'i-lucide-play', accent: '#5eead4' }
-  },
-  {
-    id: 'if',
-    type: 'ifElse',
-    position: { x: 380, y: 120 },
-    data: {
-      label: 'If / Else',
-      condition: 'input.output_parsed.classification == "flight_info"',
-      icon: 'i-lucide-split'
-    }
-  },
-  {
-    id: 'loop',
-    type: 'loop',
-    dragHandle: LOOP_DRAG_HANDLE,
-    position: { x: 100, y: 360 },
-    data: {
-      label: 'While'
-    }
-  },
-  {
-    id: 'loop-task-1',
-    type: 'app',
-    parentNode: 'loop',
-    position: { x: 32, y: 100 },
-    data: { label: 'Clone Repo', icon: 'i-simple-icons-bitbucket', accent: '#cbd5f5' }
-  },
-  {
-    id: 'loop-task-2',
-    type: 'app',
-    parentNode: 'loop',
-    position: { x: 210, y: 100 },
-    data: { label: 'Download Binary', icon: 'i-simple-icons-jfrog', accent: '#cbd5f5' }
-  },
-  {
-    id: 'loop-task-3',
-    type: 'app',
-    parentNode: 'loop',
-    position: { x: 370, y: 100 },
-    data: { label: 'Custom Stage', icon: 'i-game-icons-samus-helmet', accent: '#cbd5f5' }
-  },
-  {
-    id: 'end',
-    type: 'end',
-    position: { x: 720, y: 360 },
-    data: { label: 'End', icon: 'i-material-symbols-stop-outline-rounded', accent: '#f87171' }
-  },
-  {
-    id: 'note-1',
-    type: 'note',
-    position: { x: 640, y: 80 },
-    style: { width: 220, height: 130 },
-    data: {
-      text: 'Recordatorio: revisar métricas del loop.'
-    }
-  }
-])
+const nodes = ref<Node<WorkflowNodeData>[]>([])
 
-const edges = ref<Edge[]>([
-  {
-    id: 'start-to-if',
-    source: 'start',
-    target: 'if'
-  },
-  {
-    id: 'if-to-loop',
-    source: 'if',
-    sourceHandle: 'else',
-    target: 'loop'
-  },
-  {
-    id: 'loop-entry',
-    source: 'loop',
-    sourceHandle: 'loop-target-out',
-    target: 'loop-task-1',
-    targetHandle: 'app-target',
-    type: 'simplebezier',
-    data: { loopId: 'loop', loopRole: 'entry' }
-  },
-  {
-    id: 'loop-task-1-2',
-    source: 'loop-task-1',
-    target: 'loop-task-2',
-    data: { loopId: 'loop', loopRole: 'chain' }
-  },
-  {
-    id: 'loop-task-2-3',
-    source: 'loop-task-2',
-    target: 'loop-task-3',
-    data: { loopId: 'loop', loopRole: 'chain' }
-  },
-  {
-    id: 'loop-exit',
-    source: 'loop-task-3',
-    sourceHandle: 'app-source',
-    target: 'loop',
-    targetHandle: 'loop-source-in',
-    type: 'simplebezier',
-    data: { loopId: 'loop', loopRole: 'exit' }
-  },
-  {
-    id: 'loop-to-end',
-    source: 'loop',
-    sourceHandle: 'loop-source-out',
-    target: 'end',
-    type: 'simplebezier'
-  },
-  {
-    id: 'if-to-end',
-    source: 'if',
-    sourceHandle: 'if',
-    target: 'end',
-    type: 'simplebezier'
-  }
-])
+const edges = ref<Edge[]>([])
 
 type WorkflowSnapshot = {
   nodes: Node<WorkflowNodeData>[]
@@ -249,6 +152,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleUndoKey)
+  disableTemplatePointerListener()
 })
 
 const colorMode = useColorMode()
@@ -259,19 +163,102 @@ const canvasStyle = computed(() => ({
 }))
 const gridColor = computed(() => (isDarkMode.value ? 'rgba(148,163,184,0.35)' : 'rgba(71,85,105,0.25)'))
 
+const nodePaletteRef = ref<NodePaletteInstance | null>(null)
+const templateSelectionState = ref<TemplateSelectionState | null>(null)
 const dropPaneRef = ref<HTMLElement | null>(null)
+let isTemplatePointerListenerActive = false
 const {
   project,
   addNodes,
+  addEdges,
   getNodes,
   setEdges,
   setNodes,
   updateNode,
+  addSelectedNodes,
+  removeSelectedElements,
   onNodeDragStart,
-  onNodeDragStop
+  onNodeDragStop,
+  onNodeClick,
+  onConnectStart,
+  onConnectEnd,
+  connectionStartHandle,
+  connectionEndHandle
 } = useVueFlow()
 let seed = 1
 const makeId = () => `dnd-${seed++}`
+let edgeSeed = 1
+const makeEdgeId = () => `edge-${edgeSeed++}`
+const pendingConnectionHandle = ref<ConnectingHandle | null>(null)
+const NEW_NODE_LABEL = 'New node'
+
+const focusTemplateNode = (nodeId: string) => {
+  const targetNode = getNodes.value.find(node => node.id === nodeId)
+  if (!targetNode) {
+    return
+  }
+  removeSelectedElements()
+  addSelectedNodes([targetNode])
+}
+
+const activateTemplateSelection = (nodeId: string, anchorHandle: TemplateAnchorInfo) => {
+  templateSelectionState.value = { nodeId, anchorHandle }
+  focusTemplateNode(nodeId)
+  nodePaletteRef.value?.startSelectionMode?.()
+}
+
+const finalizeTemplateSelection = (options?: { collapsePalette?: boolean }) => {
+  if (!templateSelectionState.value) {
+    return
+  }
+  templateSelectionState.value = null
+  nodePaletteRef.value?.stopSelectionMode?.()
+  if (options?.collapsePalette ?? true) {
+    nodePaletteRef.value?.closePalette?.()
+  }
+}
+
+const handleGlobalPointerDown = (event: PointerEvent) => {
+  if (!templateSelectionState.value) {
+    return
+  }
+  const paletteEl = nodePaletteRef.value?.getRootEl?.()
+  if (paletteEl?.contains(event.target as HTMLElement)) {
+    return
+  }
+  finalizeTemplateSelection()
+}
+
+const enableTemplatePointerListener = () => {
+  if (isTemplatePointerListenerActive) {
+    return
+  }
+  window.addEventListener('pointerdown', handleGlobalPointerDown, true)
+  isTemplatePointerListenerActive = true
+}
+
+const disableTemplatePointerListener = () => {
+  if (!isTemplatePointerListenerActive) {
+    return
+  }
+  window.removeEventListener('pointerdown', handleGlobalPointerDown, true)
+  isTemplatePointerListenerActive = false
+}
+
+watch(templateSelectionState, value => {
+  if (value) {
+    enableTemplatePointerListener()
+  } else {
+    disableTemplatePointerListener()
+  }
+})
+
+watch(getNodes, nodesList => {
+  const activeId = templateSelectionState.value?.nodeId
+  if (activeId && !nodesList.some(node => node.id === activeId)) {
+    finalizeTemplateSelection({ collapsePalette: false })
+  }
+})
 
 type LoopEdgeRole = 'entry' | 'exit' | 'chain'
 
@@ -555,6 +542,164 @@ const detachNodeFromLoopIfNeeded = (node: GraphNode) => {
   syncLoopEdges(parentLoop.id)
 }
 
+type ClientPoint = { x: number; y: number }
+
+const getClientPoint = (event?: MouseEvent | TouchEvent): ClientPoint | null => {
+  if (!event) {
+    return null
+  }
+  if ('changedTouches' in event && event.changedTouches.length) {
+    const touch = event.changedTouches[0]
+    return { x: touch.clientX, y: touch.clientY }
+  }
+  if ('touches' in event && event.touches.length) {
+    const touch = event.touches[0]
+    return { x: touch.clientX, y: touch.clientY }
+  }
+  return { x: event.clientX, y: event.clientY }
+}
+
+const projectClientPointToFlow = (point: ClientPoint): XYPosition | null => {
+  const bounds = dropPaneRef.value?.getBoundingClientRect()
+  if (!bounds) {
+    return null
+  }
+  return project({
+    x: point.x - bounds.left,
+    y: point.y - bounds.top
+  })
+}
+
+const createPlaceholderFromConnection = async (
+  startHandle: ConnectingHandle,
+  absolutePosition: XYPosition
+) => {
+  const anchorHandle: TemplateAnchorInfo = {
+    nodeId: startHandle.nodeId,
+    handleId: startHandle.id ?? null,
+    type: startHandle.type
+  }
+  const loopNode = findLoopAtPosition(absolutePosition)
+  const loopThatAcceptsNode = loopNode && canTypeBeLoopChild('newNode') ? loopNode : null
+
+  const newNodeId = makeId()
+  const placeholderNode: Node<WorkflowNodeData> = {
+    id: newNodeId,
+    type: 'newNode',
+    position: loopThatAcceptsNode ? toChildPosition(loopThatAcceptsNode, absolutePosition) : absolutePosition,
+    data: { label: NEW_NODE_LABEL, templateAnchor: anchorHandle }
+  }
+
+  if (loopThatAcceptsNode) {
+    placeholderNode.parentNode = loopThatAcceptsNode.id
+  }
+
+  addNodes(placeholderNode)
+
+  const placeholderEdge: Edge =
+    startHandle.type === 'source'
+      ? {
+          id: makeEdgeId(),
+          source: startHandle.nodeId,
+          sourceHandle: startHandle.id ?? undefined,
+          target: newNodeId,
+          targetHandle: 'new-node-target'
+        }
+      : {
+          id: makeEdgeId(),
+          source: newNodeId,
+          sourceHandle: 'new-node-source',
+          target: startHandle.nodeId,
+          targetHandle: startHandle.id ?? undefined
+        }
+
+  addEdges(placeholderEdge)
+
+  await nextTick()
+  if (loopThatAcceptsNode) {
+    syncLoopEdges(loopThatAcceptsNode.id)
+  }
+  activateTemplateSelection(newNodeId, anchorHandle)
+}
+
+const handlePaletteSelection = async (item: PaletteNodeItem) => {
+  const selection = templateSelectionState.value
+  if (!selection) {
+    return
+  }
+  const nodeId = selection.nodeId
+  removeEdgesConnectedToNode(nodeId)
+  updateNode(nodeId, {
+    type: item.type,
+    data: item.data ?? {},
+    style: item.style,
+    dragHandle: item.type === 'loop' ? LOOP_DRAG_HANDLE : undefined
+  })
+  await nextTick()
+  focusTemplateNode(nodeId)
+
+  const newEdge: Edge = selection.anchorHandle.type === 'source'
+    ? {
+        id: makeEdgeId(),
+        source: selection.anchorHandle.nodeId,
+        sourceHandle: selection.anchorHandle.handleId ?? undefined,
+        target: nodeId
+      }
+    : {
+        id: makeEdgeId(),
+        source: nodeId,
+        target: selection.anchorHandle.nodeId,
+        targetHandle: selection.anchorHandle.handleId ?? undefined
+      }
+
+  addEdges(newEdge)
+
+  await nextTick()
+  const updatedNode = getNodes.value.find(node => node.id === nodeId)
+  if (updatedNode?.parentNode) {
+    if (canNodeBeLoopChild(updatedNode)) {
+      syncLoopEdges(updatedNode.parentNode)
+    } else {
+      detachNodeFromLoopIfNeeded(updatedNode)
+    }
+  }
+  scheduleHistorySnapshot()
+}
+
+const connectStartSubscription = onConnectStart(() => {
+  pendingConnectionHandle.value = connectionStartHandle.value
+    ? { ...connectionStartHandle.value }
+    : null
+})
+
+const connectEndSubscription = onConnectEnd(event => {
+  const startHandle = pendingConnectionHandle.value
+  pendingConnectionHandle.value = null
+  if (!startHandle || connectionEndHandle.value) {
+    return
+  }
+  const clientPoint = getClientPoint(event)
+  if (!clientPoint) {
+    return
+  }
+  const absolutePosition = projectClientPointToFlow(clientPoint)
+  if (!absolutePosition) {
+    return
+  }
+  void createPlaceholderFromConnection(startHandle, absolutePosition)
+})
+
+const nodeClickSubscription = onNodeClick(event => {
+  if (event.node.type !== 'newNode') {
+    return
+  }
+  const nodeData = event.node.data as NewNodePlaceholderData
+  if (!nodeData?.templateAnchor) {
+    return
+  }
+  activateTemplateSelection(event.node.id, nodeData.templateAnchor)
+})
+
 const nodeDragStartSubscription = onNodeDragStart(() => {
   suppressHistorySnapshots = true
 })
@@ -580,6 +725,9 @@ const nodeDragStopSubscription = onNodeDragStop((event: NodeDragEvent) => {
 onScopeDispose(() => {
   nodeDragStartSubscription.off()
   nodeDragStopSubscription.off()
+  connectStartSubscription.off()
+  connectEndSubscription.off()
+  nodeClickSubscription.off()
 })
 
 const onDragOver = (event: DragEvent) => {
@@ -662,8 +810,6 @@ const onDrop = async (event: DragEvent) => {
             @dragover="onDragOver"
             @drop="onDrop"
           >
-            <MiniMap />
-            <Controls />
             <Background
               :gap="24"
               :color="gridColor"
@@ -692,11 +838,15 @@ const onDrop = async (event: DragEvent) => {
             <template #node-note="nodeProps">
               <NoteNode v-bind="nodeProps" />
             </template>
+
+            <template #node-newNode="nodeProps">
+              <NewNodePlaceholder v-bind="nodeProps" />
+            </template>
           </VueFlow>
         </div>
 
         <div class="absolute left-6 top-6 z-20 flex flex-col gap-4">
-          <NodePalette class="w-80 max-h-[calc(100vh-5rem)] overflow-y-auto rounded-2xl border border-slate-200/70 bg-white/95 p-4 shadow-2xl backdrop-blur-sm dark:border-slate-800/70 dark:bg-slate-900/90" />
+          <NodePalette ref="nodePaletteRef" @select="handlePaletteSelection" />
         </div>
       </div>
     </template>
