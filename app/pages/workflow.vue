@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import type { Edge, GraphNode, Node, XYPosition } from '@vue-flow/core'
+import { computed, nextTick, onScopeDispose, ref } from 'vue'
+import type { Edge, GraphNode, Node, NodeDragEvent, XYPosition } from '@vue-flow/core'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -27,6 +27,8 @@ definePageMeta({
 
 type WorkflowNodeData = StartNodeData | IfElseNodeData | LoopNodeData | AppNodeData | EndNodeData | NoteNodeData
 
+const LOOP_DRAG_HANDLE = '.loop-node__drag-handle'
+
 const nodes = ref<Node<WorkflowNodeData>[]>([
   {
     id: 'start',
@@ -47,6 +49,7 @@ const nodes = ref<Node<WorkflowNodeData>[]>([
   {
     id: 'loop',
     type: 'loop',
+    dragHandle: LOOP_DRAG_HANDLE,
     position: { x: 100, y: 360 },
     data: {
       label: 'While'
@@ -56,7 +59,6 @@ const nodes = ref<Node<WorkflowNodeData>[]>([
     id: 'loop-task-1',
     type: 'app',
     parentNode: 'loop',
-    extent: 'parent',
     position: { x: 32, y: 100 },
     data: { label: 'Clone Repo', icon: 'i-simple-icons-bitbucket', accent: '#cbd5f5' }
   },
@@ -64,7 +66,6 @@ const nodes = ref<Node<WorkflowNodeData>[]>([
     id: 'loop-task-2',
     type: 'app',
     parentNode: 'loop',
-    extent: 'parent',
     position: { x: 210, y: 100 },
     data: { label: 'Download Binary', icon: 'i-simple-icons-jfrog', accent: '#cbd5f5' }
   },
@@ -72,7 +73,6 @@ const nodes = ref<Node<WorkflowNodeData>[]>([
     id: 'loop-task-3',
     type: 'app',
     parentNode: 'loop',
-    extent: 'parent',
     position: { x: 370, y: 100 },
     data: { label: 'Custom Stage', icon: 'i-game-icons-samus-helmet', accent: '#cbd5f5' }
   },
@@ -151,8 +151,6 @@ const edges = ref<Edge[]>([
   }
 ])
 
-const loopChildrenSnapshot = ref<Record<string, string>>({})
-
 const colorMode = useColorMode()
 const isDarkMode = computed(() => colorMode.value === 'dark')
 const canvasClasses = computed(() => (isDarkMode.value ? 'text-slate-100' : 'text-slate-900'))
@@ -162,7 +160,7 @@ const canvasStyle = computed(() => ({
 const gridColor = computed(() => (isDarkMode.value ? 'rgba(148,163,184,0.35)' : 'rgba(71,85,105,0.25)'))
 
 const dropPaneRef = ref<HTMLElement | null>(null)
-const { project, addNodes, getNodes, setEdges } = useVueFlow()
+const { project, addNodes, getNodes, setEdges, updateNode, onNodeDragStop } = useVueFlow()
 let seed = 1
 const makeId = () => `dnd-${seed++}`
 
@@ -195,6 +193,19 @@ const findLoopAtPosition = (position: XYPosition) => {
   }
   return null
 }
+
+const getNodeCenterPosition = (node: GraphNode): XYPosition => {
+  const rect = getNodeRect(node)
+  return {
+    x: rect.x + rect.width / 2,
+    y: rect.y + rect.height / 2
+  }
+}
+
+const getAbsoluteNodePosition = (node: GraphNode): XYPosition => ({
+  x: node.computedPosition?.x ?? node.position.x ?? 0,
+  y: node.computedPosition?.y ?? node.position.y ?? 0
+})
 
 const toChildPosition = (loopNode: GraphNode, absolutePosition: XYPosition): XYPosition => {
   const loopRect = getNodeRect(loopNode)
@@ -277,30 +288,64 @@ const syncLoopEdges = (loopId: string) => {
   })
 }
 
-watch(
-  nodes,
-  currentNodes => {
-    const nextSnapshot: Record<string, string> = {}
-    currentNodes
-      .filter(node => node.type === 'loop')
-      .forEach(loopNode => {
-        const children = currentNodes.filter(node => node.parentNode === loopNode.id)
-        const signature = children
-          .map(child => `${child.id}:${child.position.x}:${child.position.y}`)
-          .sort()
-          .join('|')
+const convertNodeToLoopChildIfNeeded = (node: GraphNode) => {
+  if (node.type === 'loop') {
+    return
+  }
+  const targetLoop = findLoopAtPosition(getNodeCenterPosition(node))
+  if (!targetLoop || node.parentNode === targetLoop.id) {
+    return
+  }
+  const relativePosition = toChildPosition(targetLoop, getAbsoluteNodePosition(node))
+  updateNode(node.id, {
+    parentNode: targetLoop.id,
+    extent: undefined,
+    position: relativePosition
+  })
+  syncLoopEdges(targetLoop.id)
+}
 
-        nextSnapshot[loopNode.id] = signature
+const detachNodeFromLoopIfNeeded = (node: GraphNode) => {
+  const parentLoopId = node.parentNode
+  if (!parentLoopId) {
+    return
+  }
+  const parentLoop = getNodes.value.find(n => n.id === parentLoopId && n.type === 'loop')
+  if (!parentLoop) {
+    return
+  }
+  const loopAtPosition = findLoopAtPosition(getNodeCenterPosition(node))
+  if (loopAtPosition?.id === parentLoopId) {
+    return
+  }
+  updateNode(node.id, {
+    parentNode: undefined,
+    extent: undefined,
+    hidden: false,
+    position: getAbsoluteNodePosition(node)
+  })
+  syncLoopEdges(parentLoop.id)
+}
 
-        if (loopChildrenSnapshot.value[loopNode.id] !== signature) {
-          syncLoopEdges(loopNode.id)
-        }
-      })
+const nodeDragStopSubscription = onNodeDragStop((event: NodeDragEvent) => {
+  const processed = new Set<string>()
+  const processNode = (currentNode?: GraphNode) => {
+    if (!currentNode || processed.has(currentNode.id)) {
+      return
+    }
+    processed.add(currentNode.id)
+    convertNodeToLoopChildIfNeeded(currentNode)
+    const updatedNode = getNodes.value.find(node => node.id === currentNode.id) ?? currentNode
+    detachNodeFromLoopIfNeeded(updatedNode)
+  }
 
-    loopChildrenSnapshot.value = nextSnapshot
-  },
-  { deep: true }
-)
+  processNode(event.node)
+  event.nodes.forEach(processNode)
+})
+
+onScopeDispose(() => {
+  nodeDragStopSubscription.off()
+})
 
 const onDragOver = (event: DragEvent) => {
   event.preventDefault()
@@ -338,7 +383,9 @@ const onDrop = async (event: DragEvent) => {
 
   if (loopNode) {
     newNode.parentNode = loopNode.id
-    newNode.extent = 'parent'
+  }
+  if (newNode.type === 'loop') {
+    newNode.dragHandle = LOOP_DRAG_HANDLE
   }
 
   addNodes(newNode)
