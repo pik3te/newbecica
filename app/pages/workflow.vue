@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onScopeDispose, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onScopeDispose, ref, watch } from 'vue'
 import type { Edge, GraphNode, Node, NodeDragEvent, XYPosition } from '@vue-flow/core'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -28,6 +28,12 @@ definePageMeta({
 type WorkflowNodeData = StartNodeData | IfElseNodeData | LoopNodeData | AppNodeData | EndNodeData | NoteNodeData
 
 const LOOP_DRAG_HANDLE = '.loop-node__drag-handle'
+const LOOP_CHILD_ELIGIBLE_TYPES = new Set<string>(['app', 'ifElse'])
+
+const canTypeBeLoopChild = (type?: string | null): type is string =>
+  typeof type === 'string' && LOOP_CHILD_ELIGIBLE_TYPES.has(type)
+const canNodeBeLoopChild = (node?: GraphNode | null) =>
+  Boolean(node && canTypeBeLoopChild(node.type))
 
 const nodes = ref<Node<WorkflowNodeData>[]>([
   {
@@ -151,6 +157,100 @@ const edges = ref<Edge[]>([
   }
 ])
 
+type WorkflowSnapshot = {
+  nodes: Node<WorkflowNodeData>[]
+  edges: Edge[]
+}
+
+const HISTORY_LIMIT = 50
+
+const deepClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
+
+const history = ref<WorkflowSnapshot[]>([])
+let isRestoringHistory = false
+let lastSnapshotSignature: string | null = null
+let historyWriteScheduled = false
+let suppressHistorySnapshots = false
+
+const createSnapshot = (): WorkflowSnapshot => ({
+  nodes: deepClone(nodes.value),
+  edges: deepClone(edges.value)
+})
+
+const pushHistorySnapshot = () => {
+  if (isRestoringHistory) {
+    return
+  }
+  const snapshot = createSnapshot()
+  const signature = JSON.stringify(snapshot)
+  if (signature === lastSnapshotSignature) {
+    return
+  }
+  history.value = [...history.value, snapshot].slice(-HISTORY_LIMIT)
+  lastSnapshotSignature = signature
+}
+
+const scheduleHistorySnapshot = () => {
+  if (isRestoringHistory || suppressHistorySnapshots || historyWriteScheduled) {
+    return
+  }
+  historyWriteScheduled = true
+  queueMicrotask(() => {
+    historyWriteScheduled = false
+    pushHistorySnapshot()
+  })
+}
+
+const initializeHistory = () => {
+  const snapshot = createSnapshot()
+  history.value = [snapshot]
+  lastSnapshotSignature = JSON.stringify(snapshot)
+}
+
+initializeHistory()
+
+watch([nodes, edges], () => {
+  scheduleHistorySnapshot()
+}, { deep: true })
+
+const undoLastAction = () => {
+  if (history.value.length < 2) {
+    return
+  }
+  const updatedHistory = history.value.slice(0, -1)
+  const previousSnapshot = updatedHistory[updatedHistory.length - 1]
+  if (!previousSnapshot) {
+    return
+  }
+  history.value = updatedHistory
+  isRestoringHistory = true
+  const restoredNodes = deepClone(previousSnapshot.nodes)
+  const restoredEdges = deepClone(previousSnapshot.edges)
+  nodes.value = restoredNodes
+  edges.value = restoredEdges
+  setNodes(() => deepClone(restoredNodes))
+  setEdges(() => deepClone(restoredEdges))
+  lastSnapshotSignature = JSON.stringify(previousSnapshot)
+  nextTick(() => {
+    isRestoringHistory = false
+  })
+}
+
+const handleUndoKey = (event: KeyboardEvent) => {
+  if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === 'z') {
+    event.preventDefault()
+    undoLastAction()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleUndoKey)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleUndoKey)
+})
+
 const colorMode = useColorMode()
 const isDarkMode = computed(() => colorMode.value === 'dark')
 const canvasClasses = computed(() => (isDarkMode.value ? 'text-slate-100' : 'text-slate-900'))
@@ -160,7 +260,16 @@ const canvasStyle = computed(() => ({
 const gridColor = computed(() => (isDarkMode.value ? 'rgba(148,163,184,0.35)' : 'rgba(71,85,105,0.25)'))
 
 const dropPaneRef = ref<HTMLElement | null>(null)
-const { project, addNodes, getNodes, setEdges, updateNode, onNodeDragStop } = useVueFlow()
+const {
+  project,
+  addNodes,
+  getNodes,
+  setEdges,
+  setNodes,
+  updateNode,
+  onNodeDragStart,
+  onNodeDragStop
+} = useVueFlow()
 let seed = 1
 const makeId = () => `dnd-${seed++}`
 
@@ -232,13 +341,122 @@ const loopEdgeData = (loopId: string, loopRole: LoopEdgeRole) => ({
   loopRole
 })
 
+let isSyncingLoopEdges = false
+let isPruningLoopEdges = false
+
+const runWithEdgeMutationGuard = (mutator: Parameters<typeof setEdges>[0]) => {
+  isPruningLoopEdges = true
+  setEdges(mutator)
+  nextTick(() => {
+    isPruningLoopEdges = false
+  })
+}
+
+const normalizeLoopExitEdge = (edge: Edge, loopOfSource?: string) => {
+  if (
+    loopOfSource &&
+    edge.target === loopOfSource &&
+    edge.targetHandle === LOOP_EXIT_HANDLE &&
+    edge.type !== 'simplebezier'
+  ) {
+    return {
+      ...edge,
+      type: 'simplebezier'
+    }
+  }
+  return edge
+}
+
+const registerLoopExitEdge = (
+  loopId: string,
+  edge: Edge,
+  bucket: Edge[],
+  indexMap: Map<string, number>
+) => {
+  const existingIndex = indexMap.get(loopId)
+  if (existingIndex !== undefined) {
+    bucket[existingIndex] = edge
+    return
+  }
+  indexMap.set(loopId, bucket.length)
+  bucket.push(edge)
+}
+
+const pruneLoopExternalEdges = () => {
+  const loopNodes = getNodes.value.filter(node => node.type === 'loop')
+  if (!loopNodes.length) {
+    return
+  }
+  const loopIds = new Set(loopNodes.map(loopNode => loopNode.id))
+  const childParentMap = new Map<string, string>()
+  getNodes.value.forEach(node => {
+    if (node.parentNode && loopIds.has(node.parentNode)) {
+      childParentMap.set(node.id, node.parentNode)
+    }
+  })
+  runWithEdgeMutationGuard(currentEdges => {
+    const nextEdges: Edge[] = []
+    const exitEdgeIndex = new Map<string, number>()
+    currentEdges.forEach(edge => {
+      const loopOfSource = childParentMap.get(edge.source)
+      const loopOfTarget = childParentMap.get(edge.target)
+      const entryLoopId =
+        edge.sourceHandle === LOOP_ENTRY_HANDLE && loopIds.has(edge.source)
+          ? edge.source
+          : undefined
+      if (entryLoopId && loopOfTarget !== entryLoopId) {
+        return
+      }
+
+      const targetLoopId =
+        edge.targetHandle === LOOP_EXIT_HANDLE && loopIds.has(edge.target)
+          ? edge.target
+          : undefined
+
+      if (targetLoopId) {
+        if (loopOfSource === targetLoopId) {
+          const normalizedEdge = normalizeLoopExitEdge(edge, targetLoopId)
+          registerLoopExitEdge(targetLoopId, normalizedEdge, nextEdges, exitEdgeIndex)
+        }
+        return
+      }
+
+      if (loopOfSource) {
+        if (loopOfTarget === loopOfSource) {
+          nextEdges.push(edge)
+        }
+        return
+      }
+
+      nextEdges.push(edge)
+    })
+    return nextEdges
+  })
+}
+
+const removeEdgesConnectedToNode = (nodeId: string) => {
+  runWithEdgeMutationGuard(currentEdges =>
+    currentEdges.filter(edge => edge.source !== nodeId && edge.target !== nodeId)
+  )
+}
+
 const syncLoopEdges = (loopId: string) => {
   const children = sortLoopChildren(
     getNodes.value.filter(node => node.parentNode === loopId)
   )
 
+  const childIds = new Set(children.map(child => child.id))
+  isSyncingLoopEdges = true
   setEdges(currentEdges => {
-    const preserved = currentEdges.filter(edge => edge.data?.loopId !== loopId)
+    const preserved = currentEdges.filter(edge => {
+      if (edge.data?.loopId === loopId) {
+        return false
+      }
+      if (childIds.has(edge.source) && edge.target !== loopId && !childIds.has(edge.target)) {
+        return false
+      }
+      return true
+    })
     if (!children.length) {
       return preserved
     }
@@ -286,10 +504,19 @@ const syncLoopEdges = (loopId: string) => {
 
     return [...preserved, ...loopSpecificEdges]
   })
+  nextTick(() => {
+    isSyncingLoopEdges = false
+  })
 }
+watch(edges, () => {
+  if (isSyncingLoopEdges || isPruningLoopEdges) {
+    return
+  }
+  pruneLoopExternalEdges()
+}, { deep: true })
 
 const convertNodeToLoopChildIfNeeded = (node: GraphNode) => {
-  if (node.type === 'loop') {
+  if (!canNodeBeLoopChild(node)) {
     return
   }
   const targetLoop = findLoopAtPosition(getNodeCenterPosition(node))
@@ -324,10 +551,16 @@ const detachNodeFromLoopIfNeeded = (node: GraphNode) => {
     hidden: false,
     position: getAbsoluteNodePosition(node)
   })
+  removeEdgesConnectedToNode(node.id)
   syncLoopEdges(parentLoop.id)
 }
 
+const nodeDragStartSubscription = onNodeDragStart(() => {
+  suppressHistorySnapshots = true
+})
+
 const nodeDragStopSubscription = onNodeDragStop((event: NodeDragEvent) => {
+  suppressHistorySnapshots = false
   const processed = new Set<string>()
   const processNode = (currentNode?: GraphNode) => {
     if (!currentNode || processed.has(currentNode.id)) {
@@ -341,9 +574,11 @@ const nodeDragStopSubscription = onNodeDragStop((event: NodeDragEvent) => {
 
   processNode(event.node)
   event.nodes.forEach(processNode)
+  scheduleHistorySnapshot()
 })
 
 onScopeDispose(() => {
+  nodeDragStartSubscription.off()
   nodeDragStopSubscription.off()
 })
 
@@ -372,17 +607,18 @@ const onDrop = async (event: DragEvent) => {
   })
 
   const loopNode = findLoopAtPosition(absolutePosition)
+  const loopThatAcceptsNode = loopNode && canTypeBeLoopChild(nodeMeta.type) ? loopNode : null
 
   const newNode: Node<WorkflowNodeData> = {
     id: makeId(),
     type: nodeMeta.type,
-    position: loopNode ? toChildPosition(loopNode, absolutePosition) : absolutePosition,
+    position: loopThatAcceptsNode ? toChildPosition(loopThatAcceptsNode, absolutePosition) : absolutePosition,
     data: nodeMeta.data ?? {},
     style: nodeMeta.style
   }
 
-  if (loopNode) {
-    newNode.parentNode = loopNode.id
+  if (loopThatAcceptsNode) {
+    newNode.parentNode = loopThatAcceptsNode.id
   }
   if (newNode.type === 'loop') {
     newNode.dragHandle = LOOP_DRAG_HANDLE
@@ -390,9 +626,9 @@ const onDrop = async (event: DragEvent) => {
 
   addNodes(newNode)
 
-  if (loopNode) {
+  if (loopThatAcceptsNode) {
     await nextTick()
-    syncLoopEdges(loopNode.id)
+    syncLoopEdges(loopThatAcceptsNode.id)
   }
 }
 </script>

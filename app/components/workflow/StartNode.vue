@@ -58,7 +58,7 @@ const sourceHandleStyle = computed(() => ({
     <Handle
       type="source"
       :position="Position.Right"
-      class="absolute -right-3 top-1/2  -translate-y-1/4 rounded-full border-4 transition-colors duration-200"
+      class="rounded-full border-4 transition-colors duration-200"
       :style="sourceHandleStyle"
     />
   </div>

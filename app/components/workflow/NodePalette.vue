@@ -88,7 +88,7 @@ const onDragStart = (event: DragEvent, item: any) => {
 
 <template>
   <aside
-    class="min-w-[220px] max-w-[240px] rounded-xl px-4 py-6 bg-[linear-gradient(180deg,rgba(248,250,252,0.95),rgba(241,245,249,0.9))] shadow-[0_20px_60px_-35px_rgba(15,23,42,0.45)] h-fit dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.85),rgba(30,41,59,0.82))] dark:shadow-[0_25px_70px_-40px_rgba(0,0,0,0.7)]"
+    class="min-w-[220px] max-w-60 rounded-xl px-4 py-6 bg-[linear-gradient(180deg,rgba(248,250,252,0.95),rgba(241,245,249,0.9))] shadow-[0_20px_60px_-35px_rgba(15,23,42,0.45)] h-fit dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.85),rgba(30,41,59,0.82))] dark:shadow-[0_25px_70px_-40px_rgba(0,0,0,0.7)]"
   >
     <div v-for="section in sections" :key="section.title" class="mb-5">
       <p class="px-3 text-xs font-semibold  tracking-wide text-slate-400">

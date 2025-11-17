@@ -18,7 +18,15 @@ const label = computed(() => props.data?.label ?? 'Loop')
 
 const injectedNodeId = useNodeId()
 const nodeId = computed(() => injectedNodeId ?? props.id ?? null)
-const { getNodes, setNodes, updateNodeInternals } = useVueFlow()
+const {
+  getNodes,
+  setNodes,
+  updateNodeInternals,
+  onPaneClick,
+  project,
+  removeSelectedElements,
+  addSelectedNodes
+} = useVueFlow()
 
 const collapsed = ref(false)
 
@@ -214,6 +222,41 @@ const stopResize = () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointermove', resize)
+})
+
+const getLoopNode = () => {
+  const id = nodeId.value
+  if (!id) { return null }
+  return getNodes.value.find(node => node.id === id) ?? null
+}
+
+const selectLoopIfPaneClickWithinBounds = (event: MouseEvent) => {
+  const loopNode = getLoopNode()
+  if (!loopNode) { return }
+  const paneElement = event.currentTarget as HTMLElement | null
+  const bounds = paneElement?.getBoundingClientRect()
+  if (!bounds || typeof project !== 'function') {
+    return
+  }
+  const pointerPosition = project({
+    x: event.clientX - bounds.left,
+    y: event.clientY - bounds.top
+  })
+  const loopX = loopNode.computedPosition?.x ?? loopNode.position.x ?? 0
+  const loopY = loopNode.computedPosition?.y ?? loopNode.position.y ?? 0
+  const withinX = pointerPosition.x >= loopX && pointerPosition.x <= loopX + currentSize.value.width
+  const withinY = pointerPosition.y >= loopY && pointerPosition.y <= loopY + currentSize.value.height
+  if (!withinX || !withinY) {
+    return
+  }
+  removeSelectedElements?.()
+  addSelectedNodes?.([loopNode])
+}
+
+const paneClickSubscription = onPaneClick(selectLoopIfPaneClickWithinBounds)
+
+onBeforeUnmount(() => {
+  paneClickSubscription.off()
 })
 </script>
 

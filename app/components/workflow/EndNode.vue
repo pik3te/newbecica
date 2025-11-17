@@ -49,7 +49,7 @@ const targetHandleStyle = computed(() => ({
     <Handle
       type="target"
       :position="Position.Left"
-      class="absolute -left-3 top-1/2 h-10 w-10 -translate-y-1/2 rounded-full border-[4px] transition-colors duration-200"
+      class="absolute -left-3 top-1/2 h-10 w-10 -translate-y-1/2 rounded-full border-4 transition-colors duration-200"
       :style="targetHandleStyle"
     />
 
