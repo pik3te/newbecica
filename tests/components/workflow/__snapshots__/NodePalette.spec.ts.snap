@@ -1,0 +1,7 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`NodePalette > renders the collapsed toggle by default and matches the snapshot > node-palette-collapsed 1`] = `
+"<div data-v-e9837b4b="" class="relative">
+  <div data-v-e9837b4b="" name="palette-fade" mode="out-in"><button data-v-e9837b4b="" type="button" class="flex h-12 w-12 items-center justify-center rounded-full border border-slate-200/80 bg-white/95 text-slate-700 shadow-xl backdrop-blur transition hover:-translate-y-0.5 hover:border-slate-300 hover:bg-white dark:border-slate-800/80 dark:bg-slate-900/95 dark:text-slate-200" aria-label="Open node palette"><i data-v-e9837b4b="" class="uicon-stub text-xl" name="i-lucide-plus"></i></button></div>
+</div>"
+`;

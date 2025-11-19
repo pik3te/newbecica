@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, h, resolveComponent } from 'vue'
+import { computed, h, resolveComponent, toRef } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
-import type { Task, TaskStatus } from '~/types'
+import type { Period, Range, Task, TaskStatus } from '~/types'
 
 const UBadge = resolveComponent('UBadge')
 
@@ -12,13 +12,28 @@ const statusColors: Record<TaskStatus, string> = {
   aborted: 'warning'
 }
 
+const props = defineProps<{ period: Period; range: Range }>()
+
+const periodRef = toRef(props, 'period')
+const rangeRef = toRef(props, 'range')
+const rangeStartIso = computed(() => rangeRef.value?.start?.toISOString() ?? '')
+const rangeEndIso = computed(() => rangeRef.value?.end?.toISOString() ?? '')
+const fetchKey = computed(() => `tasks-list:${periodRef.value}:${rangeStartIso.value}:${rangeEndIso.value}`)
+const queryParams = computed(() => ({
+  period: periodRef.value,
+  start: rangeStartIso.value,
+  end: rangeEndIso.value
+}))
+
 const { data, pending, error } = await useApiFetch<{
   period: string
   count: number
   tasks: Task[]
 }>('/tasks', {
-  key: 'tasks-list',
-  default: () => ({ period: 'weekly', count: 0, tasks: [] })
+  key: fetchKey,
+  default: () => ({ period: 'weekly', count: 0, tasks: [] }),
+  query: () => queryParams.value,
+  watch: [periodRef, rangeStartIso, rangeEndIso]
 })
 
 const tasks = computed(() => data.value?.tasks ?? [])

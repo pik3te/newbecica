@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { asyncWrapProviders } from 'async_hooks'
 import { computed, onBeforeUnmount, ref } from 'vue'
+import type { Styles } from '@vue-flow/core'
 
 const accentPalette = {
   start: '#6EE7B7',
@@ -13,7 +13,21 @@ const accentPalette = {
   note: '#FDE68A'
 } as const
 
-const sections = [
+type PaletteSection = {
+  title: string
+  items: PaletteItem[]
+}
+
+export type PaletteItem = {
+  label: string
+  type: string
+  icon: string
+  accent: string
+  data?: Record<string, unknown>
+  style?: Styles
+}
+
+const sections: PaletteSection[] = [
   {
     title: 'Main flow',
     items: [
@@ -105,13 +119,11 @@ const sections = [
   }
 ]
 
-const onDragStart = (event: DragEvent, item: any) => {
+const onDragStart = (event: DragEvent, item: PaletteItem) => {
   if (!event.dataTransfer) { return }
   event.dataTransfer.setData('application/vueflow', JSON.stringify(item))
   event.dataTransfer.effectAllowed = 'move'
 }
-
-type PaletteItem = (typeof sections)[number]['items'][number]
 
 const emit = defineEmits<{
   (event: 'select', item: PaletteItem): void

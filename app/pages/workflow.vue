@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, onScopeDispose, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onScopeDispose, ref, toRaw, watch } from 'vue'
 import type { ConnectingHandle, Edge, GraphNode, Node, NodeDragEvent, XYPosition } from '@vue-flow/core'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
-import { Controls } from '@vue-flow/controls'
-import { MiniMap } from '@vue-flow/minimap'
 
 import StartNode from '~/components/workflow/StartNode.vue'
 import type { StartNodeData } from '~/components/workflow/StartNode.vue'
@@ -21,6 +19,7 @@ import type { NoteNodeData } from '~/components/workflow/NoteNode.vue'
 import NewNodePlaceholder from '~/components/workflow/NewNodePlaceholder.vue'
 import type { NewNodePlaceholderData, TemplateAnchorInfo } from '~/components/workflow/NewNodePlaceholder.vue'
 import NodePalette from '~/components/workflow/NodePalette.vue'
+import type { PaletteItem } from '~/components/workflow/NodePalette.vue'
 
 definePageMeta({
   //layout: 'workflow',
@@ -42,12 +41,6 @@ type TemplateSelectionState = {
   nodeId: string
 }
 
-type PaletteNodeItem = {
-  type: string
-  data?: Record<string, any>
-  style?: Record<string, any>
-}
-
 const LOOP_DRAG_HANDLE = '.loop-node__drag-handle'
 const LOOP_CHILD_ELIGIBLE_TYPES = new Set<string>(['app', 'ifElse', 'newNode'])
 
@@ -55,6 +48,28 @@ const canTypeBeLoopChild = (type?: string | null): type is string =>
   typeof type === 'string' && LOOP_CHILD_ELIGIBLE_TYPES.has(type)
 const canNodeBeLoopChild = (node?: GraphNode | null) =>
   Boolean(node && canTypeBeLoopChild(node.type))
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const isPaletteItemPayload = (value: unknown): value is PaletteItem => {
+  if (!isPlainObject(value)) {
+    return false
+  }
+  if (typeof value.type !== 'string' || typeof value.label !== 'string') {
+    return false
+  }
+  if (typeof value.icon !== 'string' || typeof value.accent !== 'string') {
+    return false
+  }
+  if ('data' in value && value.data !== undefined && !isPlainObject(value.data)) {
+    return false
+  }
+  if ('style' in value && value.style !== undefined && !isPlainObject(value.style)) {
+    return false
+  }
+  return true
+}
 
 const nodes = ref<Node<WorkflowNodeData>[]>([])
 
@@ -67,7 +82,54 @@ type WorkflowSnapshot = {
 
 const HISTORY_LIMIT = 50
 
-const deepClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
+const deepClone = <T>(value: T): T => {
+  const rawValue = toRaw(value)
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(rawValue)
+    } catch {
+      // Fall back to JSON strategy below.
+    }
+  }
+  return JSON.parse(JSON.stringify(rawValue))
+}
+
+const safeStringify = (value: unknown) => {
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return ''
+  }
+}
+
+const toSnapshotSignature = (snapshot: WorkflowSnapshot) => {
+  const serialize = (input: Record<string, unknown>) =>
+    Object.values(input)
+      .map(value => value == null ? '' : String(value))
+      .join(':')
+  const nodeSummary = snapshot.nodes
+    .map(node => serialize({
+      id: node.id,
+      type: node.type,
+      x: node.position?.x ?? 0,
+      y: node.position?.y ?? 0,
+      parent: node.parentNode ?? '',
+      data: node.data ? safeStringify(node.data) : ''
+    }))
+    .join('|')
+  const edgeSummary = snapshot.edges
+    .map(edge => serialize({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle ?? '',
+      targetHandle: edge.targetHandle ?? '',
+      type: edge.type ?? '',
+      data: edge.data ? safeStringify(edge.data) : ''
+    }))
+    .join('|')
+  return `${nodeSummary}::${edgeSummary}`
+}
 
 const history = ref<WorkflowSnapshot[]>([])
 let isRestoringHistory = false
@@ -85,7 +147,7 @@ const pushHistorySnapshot = () => {
     return
   }
   const snapshot = createSnapshot()
-  const signature = JSON.stringify(snapshot)
+  const signature = toSnapshotSignature(snapshot)
   if (signature === lastSnapshotSignature) {
     return
   }
@@ -107,7 +169,7 @@ const scheduleHistorySnapshot = () => {
 const initializeHistory = () => {
   const snapshot = createSnapshot()
   history.value = [snapshot]
-  lastSnapshotSignature = JSON.stringify(snapshot)
+  lastSnapshotSignature = toSnapshotSignature(snapshot)
 }
 
 initializeHistory()
@@ -133,7 +195,7 @@ const undoLastAction = () => {
   edges.value = restoredEdges
   setNodes(() => deepClone(restoredNodes))
   setEdges(() => deepClone(restoredEdges))
-  lastSnapshotSignature = JSON.stringify(previousSnapshot)
+  lastSnapshotSignature = toSnapshotSignature(previousSnapshot)
   nextTick(() => {
     isRestoringHistory = false
   })
@@ -548,13 +610,17 @@ const getClientPoint = (event?: MouseEvent | TouchEvent): ClientPoint | null => 
   if (!event) {
     return null
   }
-  if ('changedTouches' in event && event.changedTouches.length) {
-    const touch = event.changedTouches[0]
-    return { x: touch.clientX, y: touch.clientY }
+  if ('changedTouches' in event) {
+    const touch = event.changedTouches.item(0)
+    if (touch) {
+      return { x: touch.clientX, y: touch.clientY }
+    }
   }
-  if ('touches' in event && event.touches.length) {
-    const touch = event.touches[0]
-    return { x: touch.clientX, y: touch.clientY }
+  if ('touches' in event) {
+    const touch = event.touches.item(0)
+    if (touch) {
+      return { x: touch.clientX, y: touch.clientY }
+    }
   }
   return { x: event.clientX, y: event.clientY }
 }
@@ -622,7 +688,7 @@ const createPlaceholderFromConnection = async (
   activateTemplateSelection(newNodeId, anchorHandle)
 }
 
-const handlePaletteSelection = async (item: PaletteNodeItem) => {
+const handlePaletteSelection = async (item: PaletteItem) => {
   const selection = templateSelectionState.value
   if (!selection) {
     return
@@ -742,10 +808,13 @@ const onDrop = async (event: DragEvent) => {
   const payload = event.dataTransfer?.getData('application/vueflow')
   if (!payload) { return }
 
-  let nodeMeta: any
+  let nodeMeta: unknown
   try {
     nodeMeta = JSON.parse(payload)
   } catch {
+    return
+  }
+  if (!isPaletteItemPayload(nodeMeta)) {
     return
   }
   const bounds = dropPaneRef.value?.getBoundingClientRect()

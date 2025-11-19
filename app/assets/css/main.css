@@ -5,11 +5,6 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
 
-.vue-flow__handle{
-    width: 10px;
-    height: 10px;
-}
-
 @layer utilities {
   /* Scrollbar vertical */
   .scrollbar::-webkit-scrollbar {
